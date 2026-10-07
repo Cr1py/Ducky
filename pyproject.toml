@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ducky"
+version = "0.1.0"
+description = "A voice-first rubber duck for your terminal."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12",
+    "rich>=13",
+    "platformdirs>=4",
+    "pydantic>=2",
+    "tomli-w>=1",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[project.scripts]
+ducky = "ducky.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ducky"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
