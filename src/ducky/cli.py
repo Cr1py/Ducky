@@ -10,7 +10,17 @@ from typing import Annotated, Iterator, Optional
 
 import typer
 
-from ducky import __version__, db, endphrase, memory, render, sessions, turn_runner
+from ducky import (
+    __version__,
+    db,
+    endphrase,
+    keys,
+    memory,
+    registry,
+    render,
+    sessions,
+    turn_runner,
+)
 from ducky.config import ConfigError, load_config, set_value
 from ducky.input import EmptyTranscript, InputUnavailable, TextInput, VoiceInput
 from ducky.llm import LLMError
@@ -42,6 +52,25 @@ def _db() -> Iterator[sqlite3.Connection]:
         raise typer.Exit(1)
     finally:
         conn.close()
+
+
+def _report_memory(result: memory.PruneResult) -> None:
+    if result.folded:
+        noun = "turn" if result.folded == 1 else "turns"
+        render.dim(f"(Folded {result.folded} older {noun} into the session summary.)")
+    if result.error:
+        render.dim(
+            f"(Couldn't update the session summary: {result.error} Nothing was lost.)"
+        )
+
+
+def _refresh_summary(
+    conn: sqlite3.Connection, cfg: dict, session: sessions.Session
+) -> None:
+    """Save a current summary before leaving a session. Never blocks the user."""
+    with render.working("Saving a summary of this session..."):
+        result = memory.refresh_summary(conn, cfg, session)
+    _report_memory(result)
 
 
 def _version(value: bool) -> None:
@@ -90,8 +119,7 @@ def _resolve_session(
     if previous and previous.id != target.id:
         memory.refresh_summary(
             conn, cfg, previous
-        )  # save the old session's summary first
-    sessions.set_active(conn, target.id)
+        )  # save the old session's summary first: sessions.set_active(conn, target.id)
     return target
 
 
@@ -135,7 +163,8 @@ def thoughts(
             )
         )
         try:
-            result = turn_runner.run_turn(conn, cfg, current, source)
+            with render.working("Ducky is thinking..."):
+                result = turn_runner.run_turn(conn, cfg, current, source)
         except InputUnavailable as e:
             render.error(str(e))
             raise typer.Exit(1)
@@ -143,12 +172,20 @@ def thoughts(
             render.error(f"{e} Try again, or use --text.")
             raise typer.Exit(1)
         except LLMError as e:
-            render.error(
-                f"The LLM call failed: {e}. Your words were saved to this session."
-            )
+            detail = str(e).rstrip()
+            if not detail.endswith((".", "]", "!")):
+                detail += "."
+            render.error(f"{detail} Your words were saved to this session.")
             raise typer.Exit(1)
 
         render.duck_says(result.response.reply, result.hint_level)
+
+        # Prune after the reply is on screen so the summarizer never delays it.
+        if memory.needs_prune(conn, cfg, result.session):
+            with render.working("Tidying up older notes..."):
+                pruned = memory.maybe_prune(conn, cfg, result.session)
+            _report_memory(pruned)
+
         render.choices_footer()
 
 
@@ -161,7 +198,7 @@ def end() -> None:
         if active is None:
             render.info("No active session.")
             return
-        memory.refresh_summary(conn, cfg, active)
+        _refresh_summary(conn, cfg, active)
         sessions.clear_active(conn)
         render.info(
             f"Ended session '{active.name}'. Resume any time: ducky thoughts --session {active.name}"
@@ -263,7 +300,7 @@ def session_delete(
 
 @config_app.command("set")
 def config_set(key: str, value: str) -> None:
-    """Set a value (e.g. `ducky config set answers true`)."""
+    """Set a value, e.g. `ducky config set answers true`."""
     try:
         new_value = set_value(key, value)
     except ConfigError as e:
@@ -272,11 +309,76 @@ def config_set(key: str, value: str) -> None:
     render.info(f"{key} = {new_value}")
 
 
+def _fail(e: Exception) -> typer.Exit:
+    render.error(str(e))
+    return typer.Exit(1)
+
+
+def _key_status(spec: registry.ModelSpec) -> str:
+    if not spec.api_key_env:
+        return "not needed"
+    return keys.get_key(spec.api_key_env)[1]
+
+
 @config_app.command("show")
 def config_show() -> None:
-    """Show current settings."""
-    for key, value in load_config().items():
+    """Show current settings and which model they resolve to."""
+    cfg = load_config()
+    for key, value in cfg.items():
         render.info(f"{key} = {value}")
+    try:
+        spec = registry.get_spec(cfg["agent"])
+    except ConfigError as e:
+        render.info(f"model = (unresolved: {e})")
+        return
+    render.info(
+        f"model = {spec.provider}: {spec.model}  (API key: {_key_status(spec)})"
+    )
+
+
+@config_app.command("models")
+def config_models() -> None:
+    """List available models (built-in plus your own models.toml)."""
+    try:
+        models = registry.load_registry()
+    except ConfigError as e:
+        raise _fail(e)
+    rows = [
+        (name, spec.provider, spec.model, spec.api_key_env or "-", _key_status(spec))
+        for name, spec in models.items()
+    ]
+    render.models_table(rows, load_config()["agent"])
+    render.dim(f"Add or override models in: {registry.user_models_path()}")
+
+
+@config_app.command("keys")
+def config_keys() -> None:
+    """Show which models have an API key (values are never printed)."""
+    try:
+        models = registry.load_registry()
+    except ConfigError as e:
+        raise _fail(e)
+    for name, spec in models.items():
+        render.info(f"{name:<10} {spec.api_key_env or '-':<20} {_key_status(spec)}")
+    render.dim(f"Keys file: {keys.keys_path()}  (environment variables take priority)")
+
+
+@config_app.command("set-key")
+def config_set_key(name: str) -> None:
+    """Store an API key for a model in Ducky's keys file (prompts without echoing)."""
+    try:
+        spec = registry.get_spec(name)
+    except ConfigError as e:
+        raise _fail(e)
+    if not spec.api_key_env:
+        render.info(f"'{name}' needs no API key.")
+        return
+    value = typer.prompt(spec.api_key_env, hide_input=True).strip()
+    if not value:
+        render.error("No key entered.")
+        raise typer.Exit(1)
+    path = keys.save_key(spec.api_key_env, value)
+    render.info(f"Saved {spec.api_key_env} to {path}")
 
 
 # --- phrases ----------------------------------------------------------------

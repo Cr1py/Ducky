@@ -1,5 +1,6 @@
-"""Config: a TOML file in the user config dir, validated on write
-Set DUCKY_HOME to relocate everything (used by tests)
+"""Config: a TOML file in the user config dir, validated on write.
+
+Set DUCKY_HOME to relocate everything (used by tests).
 """
 
 from __future__ import annotations
@@ -16,14 +17,12 @@ APP_NAME = "ducky"
 
 DEFAULTS: dict[str, Any] = {
     "answers": False,  # allow direct answers (hint level 4)
+    "agent": "ollama",  # a name from models.toml
     "silence": 6.0,  # seconds of silence before Ducky responds
-    "stt": "vosk",  # speech-to-text engine
-    "agent": "claude",  # provider, or "provider/model"
-    "max_context_tokens": 6000,  # prune threshold
     "tone": "default",  # future implementation: fun response styles
+    "stt": "vosk",  # speech-to-text engine
+    "max_context_tokens": 6000,  # prune threshold
 }
-
-PROVIDERS = {"claude", "openai", "grok", "qwen", "gemini"}
 TONES = {"default"}
 STT_ENGINES = {"vosk"}
 
@@ -90,9 +89,9 @@ def coerce(key: str, raw: str) -> Any:
     if key == "answers":
         return _to_bool(raw)
     if key == "agent":
-        provider, _, model = raw.strip().partition("/")
-        _choice(provider, PROVIDERS, "agent")
-        return raw.strip() if model else provider.lower()
+        from ducky import registry  # lazy: registry imports this module
+
+        return _choice(raw, set(registry.load_registry()), "model")
     if key == "silence":
         try:
             value = float(raw)

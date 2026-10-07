@@ -1,11 +1,16 @@
-"""One turn of conversation: capture -> save -> LLM -> apply -> save -> prune."""
+"""One turn of conversation: capture -> save -> LLM -> apply -> save.
+
+Pruning is triggered by the CLI *after* the reply is shown, so the summarizer's
+extra LLM call never delays the answer.
+"""
+
 from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
-from ducky import memory, sessions
+from ducky import sessions
 from ducky.input.base import EmptyTranscript, InputSource
 from ducky.llm import prompts
 from ducky.llm.client import LLMClient, get_client
@@ -16,7 +21,7 @@ MAX_INTRO_NUDGES = 2
 
 OPENING_PROMPTS = {
     "awaiting_system": "Walk me through your system first: what are you building, "
-                       "and how do the pieces fit together?",
+    "and how do the pieces fit together?",
     "awaiting_problem": "Thanks, that helps. Now, what's the problem you're running into?",
     "iterating": "I'm listening. Talk me through your thinking.",
 }
@@ -102,10 +107,14 @@ def run_turn(
 
     hint_level = apply_response(conn, session, response, transcript, cap)
     sessions.add_turn(
-        conn, session.id, "ducky", response.reply, hint_level=hint_level, style=response.style
+        conn,
+        session.id,
+        "ducky",
+        response.reply,
+        hint_level=hint_level,
+        style=response.style,
     )
 
     updated = sessions.get_session(conn, session.id)
     assert updated is not None
-    memory.maybe_prune(conn, cfg, updated)
     return TurnResult(response=response, hint_level=hint_level, session=updated)

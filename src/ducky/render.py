@@ -1,4 +1,4 @@
-"""Terminal output lives here so the rest of the code stays testable."""
+"""All terminal output lives here so the rest of the code stays testable."""
 
 from __future__ import annotations
 
@@ -15,6 +15,11 @@ err_console = Console(stderr=True)
 
 def error(msg: str) -> None:
     err_console.print(Text(f"Error: {msg}", style="bold red"))
+
+
+def working(message: str):
+    """Spinner context manager (no-op output when not attached to a terminal)."""
+    return console.status(Text(message, style="dim"))
 
 
 def info(msg: str) -> None:
@@ -61,6 +66,19 @@ def sessions_table(sessions: list[Session], active_id: int | None) -> None:
     table.add_column("Last active")
     for s in sessions:
         table.add_row("*" if s.id == active_id else "", s.name, s.phase, s.last_active)
+    console.print(table)
+
+
+def models_table(rows: list[tuple[str, str, str, str, str]], active: str) -> None:
+    table = Table(title="Models")
+    for column in ("", "Name", "Provider", "Model", "Key variable", "Key"):
+        table.add_column(
+            column, overflow="fold"
+        )  # wrap long IDs instead of truncating them
+    for name, provider, model, env_var, status in rows:
+        table.add_row(
+            "*" if name == active else "", name, provider, model, env_var, status
+        )
     console.print(table)
 
 
