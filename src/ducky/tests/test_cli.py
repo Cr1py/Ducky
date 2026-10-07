@@ -119,6 +119,9 @@ def test_end_refreshes_summary_for_longer_sessions():
 
 def test_missing_key_is_friendly_and_input_is_saved(monkeypatch):
     monkeypatch.delenv("DUCKY_LLM")
+    invoke(
+        "config", "set", "agent", "claude"
+    )  # a model that needs a key (the default is keyless Ollama)
     r = invoke("thoughts", "--text", "my loop never ends")
     assert r.exit_code == 1
     assert "ANTHROPIC_API_KEY" in r.output and "saved" in r.output
@@ -126,6 +129,7 @@ def test_missing_key_is_friendly_and_input_is_saved(monkeypatch):
 
 
 def test_config_keys_and_set_key():
+    invoke("config", "set", "agent", "claude")
     r = invoke("config", "keys")
     assert "ANTHROPIC_API_KEY" in r.stdout and "missing" in r.stdout
     assert invoke("config", "set-key", "claude", input="sk-abc\n").exit_code == 0
