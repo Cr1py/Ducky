@@ -3,6 +3,7 @@
 M0 ships exact tail matching + DB helpers. M5 upgrades matching to fuzzy
 (rapidfuzz) and adds `phrases test` alias capture.
 """
+
 from __future__ import annotations
 
 import re
@@ -29,7 +30,7 @@ def strip_end_phrase(transcript: str, phrases: list[str]) -> tuple[str, bool]:
         target = _normalize(phrase)
         if not target or len(words) < len(target):
             continue
-        tail = _normalize(" ".join(words[-len(target):]))
+        tail = _normalize(" ".join(words[-len(target) :]))
         if tail == target:
             return " ".join(words[: -len(target)]).rstrip(" ,.;:-"), True
     return transcript, False
@@ -42,10 +43,13 @@ def list_phrases(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 def add_phrase(conn: sqlite3.Connection, phrase: str, is_alias: bool = False) -> str:
     phrase = " ".join(_normalize(phrase))
     if len(phrase.split()) < MIN_WORDS:
-        raise PhraseError(f"End phrases need at least {MIN_WORDS} words to avoid false triggers.")
+        raise PhraseError(
+            f"End phrases need at least {MIN_WORDS} words to avoid false triggers."
+        )
     try:
         conn.execute(
-            "INSERT INTO end_phrases (phrase, is_alias) VALUES (?, ?)", (phrase, int(is_alias))
+            "INSERT INTO end_phrases (phrase, is_alias) VALUES (?, ?)",
+            (phrase, int(is_alias)),
         )
         conn.commit()
     except sqlite3.IntegrityError:
