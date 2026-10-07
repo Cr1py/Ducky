@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "ducky"
 version = "0.1.0"
-description = "A duck in your terminal you can walk through your problems to."
+description = "A duck in your terminal you can walk your problems through."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
