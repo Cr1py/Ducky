@@ -67,7 +67,56 @@ def build_system_prompt(cfg: dict[str, Any], session: Session, cap: int) -> str:
 
 
 def build_messages(turns: list[Turn]) -> list[dict[str, str]]:
-    return [
-        {"role": "assistant" if t.role == "ducky" else "user", "content": t.text}
-        for t in turns
-    ]
+    """Turns -> chat messages.
+
+    Past Ducky replies are re-wrapped as JSON so the history matches the output
+    format the system prompt demands (plain-text history makes models drift out
+    of JSON). The list always starts with a user message, which some providers
+    require.
+    """
+    messages: list[dict[str, str]] = []
+    for t in turns:
+        if t.role == "ducky":
+            content = json.dumps(
+                {
+                    "reply": t.text,
+                    "style": t.style or "socratic",
+                    "hint_level": t.hint_level or 0,
+                }
+            )
+            messages.append({"role": "assistant", "content": content})
+        else:
+            messages.append({"role": "user", "content": t.text})
+    while messages and messages[0]["role"] != "user":
+        messages.pop(0)
+    return messages
+
+
+SUMMARIZER_SYSTEM = """\
+You maintain a rolling summary of a coding-help conversation between a developer
+and Ducky, a rubber duck that guides with questions and hints.
+
+You will receive the existing summary (possibly empty) and a batch of older turns.
+Produce ONE updated summary that merges both. It must preserve:
+- the developer's current approach and any changes of direction
+- hints and questions Ducky already gave, and the highest hint level reached
+- decisions made, things ruled out, and unresolved questions
+Be concrete and compact (under ~250 words). Plain text, no preamble, no headings.
+The system description and problem statement are stored separately; do not repeat
+them except where the conversation changed them."""
+
+
+def build_summary_request(
+    session: Session, turns: list[Turn]
+) -> tuple[str, list[dict[str, str]]]:
+    lines = []
+    for t in turns:
+        if t.role == "user":
+            lines.append(f"Developer: {t.text}")
+        else:
+            lines.append(f"Ducky (hint level {t.hint_level or 0}): {t.text}")
+    body = (
+        f"Existing summary:\n{session.summary or '(none yet)'}\n\n"
+        "Older turns to fold in:\n" + "\n".join(lines)
+    )
+    return SUMMARIZER_SYSTEM, [{"role": "user", "content": body}]

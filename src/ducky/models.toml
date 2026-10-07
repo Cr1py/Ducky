@@ -1,0 +1,84 @@
+# Ducky model registry (built-in defaults).
+#
+# To add or change models, DON'T edit this file. Create models.toml in Ducky's
+# config directory (run `ducky config models` to see the exact path). Entries
+# there are merged field-by-field over these, so overriding just the model ID is:
+#
+#     [models.claude]
+#     model = "claude-sonnet-5-5"
+#
+# and a brand-new model is a full entry with a new name.
+#
+# Fields
+#   provider      "openai_compat" | "anthropic" | "gemini" | "ollama"   (required)
+#                 openai_compat covers OpenAI, Grok, Qwen, DeepSeek, and local
+#                 servers such as LM Studio. Use "ollama" for Ollama itself: it
+#                 talks to Ollama's native API, which can set the context window.
+#   model         the provider's model ID                        (required)
+#   api_key_env   environment variable holding the API key. Omit it for local
+#                 servers that need no key.            (required for anthropic and gemini)
+#   base_url      API root. Required for openai_compat; optional for anthropic,
+#                 gemini and ollama (official / http://localhost:11434 by default).
+#   max_tokens    output token limit. Reasoning models spend tokens "thinking",
+#                 so too low a value can produce an empty reply.  (default 4096)
+#   token_param   openai_compat only: "max_tokens" (default) or
+#                 "max_completion_tokens" (newer OpenAI models)
+#   timeout       seconds before a request is abandoned           (default 60)
+#
+#   ollama only:
+#   num_ctx       context window in tokens. Ollama's own default is 4k on GPUs under
+#                 24 GiB and it silently drops whatever doesn't fit, so set this.
+#                 Ducky also prunes history sooner to stay inside it.
+#   keep_alive    how long the model stays loaded after a request, e.g. "30m"
+#   think         false (or a model-specific string like "low") for thinking models;
+#                 leave unset for models without a thinking mode
+#
+# Select a model with:  ducky config set agent <name>
+
+# Local Ollama: locally stored and ran w/ API key
+# Download the model first:  ollama pull gemma4:e2b
+# num_ctx + max_tokens leave room for Ducky's prompt and history inside the window
+# timeout is generous because the first request after a pause loads the model
+[models.ollama]
+provider = "ollama"
+model = "gemma4:e2b"
+num_ctx = 8192
+max_tokens = 1024
+timeout = 120
+
+# Models that require an API key (Anthropic, Gemini, OpenAI)
+
+[models.claude]
+provider = "anthropic"
+model = "claude-haiku-4-5-20251001"   # cheap for testing; swap in a stronger model for better guidance
+api_key_env = "ANTHROPIC_API_KEY"
+
+[models.chatgpt]
+provider = "openai_compat"
+base_url = "https://api.openai.com/v1"
+model = "gpt-6-luna"
+api_key_env = "OPENAI_API_KEY"
+token_param = "max_completion_tokens"
+max_tokens = 8192
+
+[models.gemini]
+provider = "gemini"
+model = "gemini-3.8-flash"
+api_key_env = "GEMINI_API_KEY"
+max_tokens = 8192
+
+
+# Examples for your own models.toml (not active here):
+#
+# Ollama Cloud (needs OLLAMA_API_KEY):
+# [models.ollama-cloud]
+# provider = "ollama"
+# base_url = "https://ollama.com"
+# model = "gemma4:31b"
+# api_key_env = "OLLAMA_API_KEY"
+#
+# Another local server with an OpenAI-style API (LM Studio, llama.cpp, vLLM):
+# [models.lmstudio]
+# provider = "openai_compat"
+# base_url = "http://localhost:1234/v1"
+# model = "your-model-id"
