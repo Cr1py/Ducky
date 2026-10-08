@@ -1,5 +1,6 @@
 """Session + turn persistence. The CLI is stateless, so the active session
 is a pointer stored in the `state` table."""
+
 from __future__ import annotations
 
 import random
@@ -9,11 +10,24 @@ from dataclasses import dataclass
 
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 UPDATABLE = {
-    "phase", "system_description", "problem_statement",
-    "summary", "hint_level", "intro_nudges",
+    "phase",
+    "system_description",
+    "problem_statement",
+    "summary",
+    "hint_level",
+    "intro_nudges",
 }
 
-ADJECTIVES = ["quiet", "curious", "sleepy", "plucky", "mellow", "brave", "dapper", "fuzzy"]
+ADJECTIVES = [
+    "quiet",
+    "curious",
+    "sleepy",
+    "plucky",
+    "mellow",
+    "brave",
+    "dapper",
+    "fuzzy",
+]
 NOUNS = ["duckling", "mallard", "pond", "puddle", "feather", "bill", "wader", "teal"]
 
 
@@ -86,7 +100,9 @@ def get_session_by_name(conn: sqlite3.Connection, name: str) -> Session | None:
 
 
 def list_sessions(conn: sqlite3.Connection) -> list[Session]:
-    rows = conn.execute("SELECT * FROM sessions ORDER BY last_active DESC, id DESC").fetchall()
+    rows = conn.execute(
+        "SELECT * FROM sessions ORDER BY last_active DESC, id DESC"
+    ).fetchall()
     return [Session.from_row(r) for r in rows]
 
 
@@ -128,14 +144,19 @@ def update_session(conn: sqlite3.Connection, session_id: int, **fields) -> None:
 
 
 def touch(conn: sqlite3.Connection, session_id: int) -> None:
-    conn.execute("UPDATE sessions SET last_active = datetime('now') WHERE id = ?", (session_id,))
+    conn.execute(
+        "UPDATE sessions SET last_active = datetime('now') WHERE id = ?", (session_id,)
+    )
     conn.commit()
 
 
 # --- active session pointer -------------------------------------------------
 
+
 def get_active_id(conn: sqlite3.Connection) -> int | None:
-    row = conn.execute("SELECT value FROM state WHERE key = 'active_session_id'").fetchone()
+    row = conn.execute(
+        "SELECT value FROM state WHERE key = 'active_session_id'"
+    ).fetchone()
     return int(row["value"]) if row and row["value"] else None
 
 
@@ -159,6 +180,7 @@ def clear_active(conn: sqlite3.Connection) -> None:
 
 
 # --- turns ------------------------------------------------------------------
+
 
 def add_turn(
     conn: sqlite3.Connection,
@@ -185,9 +207,31 @@ def get_turns(
     rows = conn.execute(sql + " ORDER BY id", (session_id,)).fetchall()
     return [
         Turn(
-            id=r["id"], session_id=r["session_id"], role=r["role"], text=r["text"],
-            hint_level=r["hint_level"], style=r["style"],
-            summarized=bool(r["summarized"]), created_at=r["created_at"],
+            id=r["id"],
+            session_id=r["session_id"],
+            role=r["role"],
+            text=r["text"],
+            hint_level=r["hint_level"],
+            style=r["style"],
+            summarized=bool(r["summarized"]),
+            created_at=r["created_at"],
         )
         for r in rows
     ]
+
+
+# --- summary ------------------------------------------------------------------
+
+
+def apply_summary(
+    conn: sqlite3.Connection, session_id: int, summary: str, turn_ids: list[int]
+) -> None:
+    """Store the new summary and mark the folded turns, atomically."""
+    with conn:  # one transaction: both writes happen or neither does
+        conn.execute(
+            "UPDATE sessions SET summary = ? WHERE id = ?", (summary, session_id)
+        )
+        conn.executemany(
+            "UPDATE turns SET summarized = 1 WHERE id = ? AND session_id = ?",
+            [(tid, session_id) for tid in turn_ids],
+        )

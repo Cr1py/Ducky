@@ -11,9 +11,8 @@
 #
 # Fields
 #   provider      "openai_compat" | "anthropic" | "gemini" | "ollama"   (required)
-#                 openai_compat covers OpenAI, Grok, Qwen, DeepSeek, and local
-#                 servers such as LM Studio. Use "ollama" for Ollama itself: it
-#                 talks to Ollama's native API, which can set the context window.
+#                 Use "ollama" for Ollama itself: it talks to Ollama's native API, 
+#                 which can set the context window.
 #   model         the provider's model ID                        (required)
 #   api_key_env   environment variable holding the API key. Omit it for local
 #                 servers that need no key.            (required for anthropic and gemini)
@@ -36,12 +35,12 @@
 # Select a model with:  ducky config set agent <name>
 
 # Local Ollama: locally stored and ran w/ API key
-# Download the model first:  ollama pull gemma4:e2b
+# Download the model first: (ex: ollama pull gemma4:e2b)
 # num_ctx + max_tokens leave room for Ducky's prompt and history inside the window
 # timeout is generous because the first request after a pause loads the model
 [models.ollama]
 provider = "ollama"
-model = "gemma4:e2b"
+model = "qwen3.8:27b"
 num_ctx = 8192
 max_tokens = 1024
 timeout = 120

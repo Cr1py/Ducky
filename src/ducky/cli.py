@@ -117,9 +117,8 @@ def _resolve_session(
         target = previous or sessions.create_session(conn)
 
     if previous and previous.id != target.id:
-        memory.refresh_summary(
-            conn, cfg, previous
-        )  # save the old session's summary first: sessions.set_active(conn, target.id)
+        _refresh_summary(conn, cfg, previous)  # save the old session's summary first
+    sessions.set_active(conn, target.id)
     return target
 
 

@@ -94,7 +94,7 @@ def post_json(
 
 
 class OpenAICompatAdapter:
-    """OpenAI, Grok, Qwen, DeepSeek, and local servers. System prompt = first message."""
+    """OpenAI and other OpenAI-style servers (LM Studio, llama.cpp, ...). System prompt = first message."""
 
     def __init__(
         self, spec: ModelSpec, api_key: str | None, http_client: Any = None

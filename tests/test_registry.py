@@ -13,16 +13,14 @@ def write_user_models(ducky_home, text):
 
 def test_builtin_registry_is_valid():
     models = registry.load_registry()
-    assert set(models) == {"claude", "chatgpt", "gemini", "ollama"}
+    assert set(models) == {"ollama", "claude", "chatgpt", "gemini"}
     assert models["claude"].provider == "anthropic"
     assert models["gemini"].provider == "gemini"
     assert models["chatgpt"].token_param == "max_completion_tokens"
+    assert models["gemini"].api_key_env == "GEMINI_API_KEY"
+    assert models["claude"].max_tokens == 4096  # default applied
     ollama = models["ollama"]
-    assert (
-        ollama.provider == "ollama"
-        and ollama.api_key_env is None
-        and ollama.num_ctx == 8192
-    )
+    assert ollama.provider == "ollama" and ollama.api_key_env is None and ollama.num_ctx == 8192
 
 
 def test_user_file_overrides_single_field(ducky_home):
@@ -47,13 +45,10 @@ def test_user_file_adds_keyless_local_model(ducky_home):
         ('[models.x]\nprovider = "openai_compat"\nmodel = "m"\n', "base_url"),
         ('[models.x]\nprovider = "anthropic"\nmodel = "m"\n', "api_key_env"),
         ('[models.x]\nprovider = "carrier-pigeon"\nmodel = "m"\n', "provider"),
-        ("[models.claude]\nmaxtokens = 5\n", "maxtokens"),  # typo -> loud failure
-        ("[models.claude]\nmax_tokens = 0\n", "max_tokens"),
-        ('[models.claude]\ntier = "hard"\n', "tier"),  # field from the old sample
-        (
-            '[models.MyModel]\nprovider = "gemini"\nmodel = "m"\napi_key_env = "K"\n',
-            "Invalid model name",
-        ),
+        ('[models.claude]\nmaxtokens = 5\n', "maxtokens"),          # typo -> loud failure
+        ('[models.claude]\nmax_tokens = 0\n', "max_tokens"),
+        ('[models.claude]\ntier = "hard"\n', "tier"),                # field from the old sample
+        ('[models.MyModel]\nprovider = "gemini"\nmodel = "m"\napi_key_env = "K"\n', "Invalid model name"),
         ("[models.x\n", "invalid TOML"),
         ("models = 3\n", "expected [models"),
     ],
@@ -63,23 +58,17 @@ def test_invalid_user_entries(ducky_home, body, fragment):
     with pytest.raises(RegistryError) as exc:
         registry.load_registry()
     assert fragment in str(exc.value)
-    assert (
-        str(path) in str(exc.value)
-        or "invalid TOML" in str(exc.value)
-        or "expected" in str(exc.value)
-    )
+    assert str(path) in str(exc.value) or "invalid TOML" in str(exc.value) or "expected" in str(exc.value)
 
 
 def test_get_spec_case_insensitive_and_unknown():
     assert registry.get_spec("CLAUDE").provider == "anthropic"
-    with pytest.raises(RegistryError, match="Options: claude"):
+    with pytest.raises(RegistryError, match="Options: .*claude"):
         registry.get_spec("llama")
 
 
 def test_ollama_entry_needs_neither_key_nor_base_url(ducky_home):
-    write_user_models(
-        ducky_home, '[models.mine]\nprovider = "ollama"\nmodel = "llama3.2"\n'
-    )
+    write_user_models(ducky_home, '[models.mine]\nprovider = "ollama"\nmodel = "llama3.2"\n')
     spec = registry.get_spec("mine")
     assert spec.api_key_env is None and spec.base_url is None and spec.num_ctx is None
 
@@ -95,9 +84,7 @@ def test_ollama_fields_accept_expected_types(ducky_home):
     assert (b.think, b.keep_alive) == ("low", 0)
 
 
-@pytest.mark.parametrize(
-    "field", ["num_ctx = 4096", 'keep_alive = "5m"', "think = false"]
-)
+@pytest.mark.parametrize("field", ['num_ctx = 4096', 'keep_alive = "5m"', 'think = false'])
 def test_ollama_only_fields_rejected_elsewhere(ducky_home, field):
     write_user_models(ducky_home, f"[models.claude]\n{field}\n")
     with pytest.raises(RegistryError, match="only apply to provider"):
@@ -105,8 +92,6 @@ def test_ollama_only_fields_rejected_elsewhere(ducky_home, field):
 
 
 def test_ollama_num_ctx_must_be_positive(ducky_home):
-    write_user_models(
-        ducky_home, '[models.x]\nprovider = "ollama"\nmodel = "m"\nnum_ctx = 0\n'
-    )
+    write_user_models(ducky_home, '[models.x]\nprovider = "ollama"\nmodel = "m"\nnum_ctx = 0\n')
     with pytest.raises(RegistryError, match="num_ctx"):
         registry.load_registry()
