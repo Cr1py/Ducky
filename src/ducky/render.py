@@ -1,9 +1,17 @@
 """All terminal output lives here so the rest of the code stays testable."""
-
 from __future__ import annotations
 
-from rich.console import Console
+from rich.console import Console, Group
+from rich.live import Live
 from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    TextColumn,
+    TimeRemainingColumn,
+    TransferSpeedColumn,
+)
 from rich.table import Table
 from rich.text import Text
 
@@ -31,22 +39,14 @@ def dim(msg: str) -> None:
 
 
 def session_header(session: Session) -> None:
-    console.print(
-        Text(f"Session: {session.name}  ({session.phase})", style="bold cyan")
-    )
+    console.print(Text(f"Session: {session.name}  ({session.phase})", style="bold cyan"))
 
 
 def duck_says(text: str, hint_level: int | None = None) -> None:
     subtitle = f"hint level {hint_level}" if hint_level is not None else None
     console.print(
-        Panel(
-            Text(text),
-            title="Ducky",
-            title_align="left",
-            subtitle=subtitle,
-            subtitle_align="right",
-            border_style="yellow",
-        )
+        Panel(Text(text), title="Ducky", title_align="left", subtitle=subtitle,
+              subtitle_align="right", border_style="yellow")
     )
 
 
@@ -72,13 +72,9 @@ def sessions_table(sessions: list[Session], active_id: int | None) -> None:
 def models_table(rows: list[tuple[str, str, str, str, str]], active: str) -> None:
     table = Table(title="Models")
     for column in ("", "Name", "Provider", "Model", "Key variable", "Key"):
-        table.add_column(
-            column, overflow="fold"
-        )  # wrap long IDs instead of truncating them
+        table.add_column(column, overflow="fold")  # wrap long IDs instead of truncating them
     for name, provider, model, env_var, status in rows:
-        table.add_row(
-            "*" if name == active else "", name, provider, model, env_var, status
-        )
+        table.add_row("*" if name == active else "", name, provider, model, env_var, status)
     console.print(table)
 
 
@@ -97,3 +93,65 @@ def history_view(session: Session, turns: list[Turn]) -> None:
         style = "green" if t.role == "user" else "yellow"
         console.print(Text(f"{who}:", style=f"bold {style}"))
         console.print(Text(t.text))
+
+
+# --- voice -------------------------------------------------------------------
+
+def _level_bar(level: float, width: int = 20) -> str:
+    filled = min(width, int(level * 8 * width))  # speech RMS is small; scale it up to be visible
+    return "█" * filled + "░" * (width - filled)
+
+
+class LiveDisplay:
+    """The live 'Listening...' view: level meter, countdown, and the transcript so far."""
+
+    def __init__(self, hint: str) -> None:
+        self._hint = hint
+        self._live: Live | None = None
+
+    def _view(self, text: str, level: float, silence_left: float | None, done: bool = False) -> Group:
+        if done:
+            return Group(Text("Heard:", style="bold green"), Text(text or "(nothing)"))
+        status = "Listening"
+        if silence_left is not None:
+            status += f"  (ending in {silence_left:.0f}s of silence)"
+        return Group(
+            Text(f"● {status}", style="bold red"),
+            Text(_level_bar(level), style="dim"),
+            Text(text or "…"),
+            Text(self._hint, style="dim"),
+        )
+
+    def start(self, silence_seconds: float) -> None:
+        self._live = Live(self._view("", 0.0, None), console=console, refresh_per_second=10, transient=False)
+        self._live.start()
+
+    def update(self, text: str, level: float, silence_left: float | None) -> None:
+        if self._live is not None:
+            self._live.update(self._view(text, level, silence_left))
+
+    def stop(self, final_text: str) -> None:
+        if self._live is not None:
+            self._live.update(self._view(final_text, 0.0, None, done=True))
+            self._live.stop()
+            self._live = None
+
+
+def download_progress() -> Progress:
+    return Progress(
+        TextColumn("{task.description}"),
+        BarColumn(),
+        DownloadColumn(),
+        TransferSpeedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    )
+
+
+def devices_table(rows: list[dict]) -> None:
+    table = Table(title="Input devices")
+    for column in ("", "Index", "Name", "Channels"):
+        table.add_column(column, overflow="fold")
+    for row in rows:
+        table.add_row("*" if row["default"] else "", str(row["index"]), row["name"], str(row["channels"]))
+    console.print(table)

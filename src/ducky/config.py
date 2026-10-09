@@ -21,8 +21,11 @@ DEFAULTS: dict[str, Any] = {
     "silence": 6.0,  # seconds of silence before Ducky responds
     "tone": "default",  # future implementation: fun response styles
     "stt": "vosk",  # speech-to-text engine
+    "vosk_model": "vosk-model-small-en-us-0.15",  # a model name, or a path to a model folder
+    "mic": "",  # input device index or name; empty = system default
     "max_context_tokens": 6000,  # prune threshold
 }
+
 TONES = {"default"}
 STT_ENGINES = {"vosk"}
 
@@ -104,6 +107,14 @@ def coerce(key: str, raw: str) -> Any:
         return _choice(raw, TONES, "tone")
     if key == "stt":
         return _choice(raw, STT_ENGINES, "stt engine")
+    if key == "mic":
+        value = raw.strip()
+        return "" if value.lower() in ("", "default") else value
+    if key == "vosk_model":
+        value = raw.strip()
+        if not value:
+            raise ConfigError("vosk_model can't be empty.")
+        return value
     if key == "max_context_tokens":
         try:
             value = int(raw)

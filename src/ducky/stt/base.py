@@ -18,5 +18,9 @@ class STTEngine(ABC):
         """Feed a chunk of 16 kHz mono PCM; return a result if there is one."""
 
     @abstractmethod
+    def flush(self) -> str:
+        """Finish the utterance in progress and return its text ('' if none)."""
+
+    @abstractmethod
     def reset(self) -> None:
         """Clear internal state between turns."""
