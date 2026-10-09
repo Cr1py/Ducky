@@ -7,13 +7,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from ducky.errors import EmptyTranscript, InputUnavailable  # re-exported for compatibility
 
-class InputUnavailable(Exception):
-    """The input source can't be used right now (no mic, not built yet, ...)."""
-
-
-class EmptyTranscript(Exception):
-    """The source produced no usable text."""
+__all__ = ["EmptyTranscript", "InputSource", "InputUnavailable"]
 
 
 class InputSource(ABC):
