@@ -42,8 +42,10 @@
 provider = "ollama"
 model = "qwen3.8:27b"
 num_ctx = 8192
-max_tokens = 1024
-timeout = 120
+max_tokens = 400
+timeout = 300 
+keep_alive = "30m"
+
 
 # Models that require an API key (Anthropic, Gemini, OpenAI)
 
