@@ -12,6 +12,7 @@ import typer
 
 from ducky import (
     __version__,
+    audio,
     db,
     endphrase,
     keys,
@@ -22,9 +23,10 @@ from ducky import (
     turn_runner,
 )
 from ducky.config import ConfigError, load_config, set_value
-from ducky.input import EmptyTranscript, InputUnavailable, TextInput, VoiceInput
+from ducky.input import EmptyTranscript, InputUnavailable, TextInput, build_voice_input
 from ducky.llm import LLMError
 from ducky.sessions import SessionError
+from ducky.stt import models as stt_models
 
 app = typer.Typer(
     name="ducky",
@@ -39,7 +41,11 @@ phrases_app = typer.Typer(
 )
 app.add_typer(session_app, name="session")
 app.add_typer(config_app, name="config")
+mic_app = typer.Typer(help="Check your microphone.", no_args_is_help=True)
+stt_app = typer.Typer(help="Manage the speech-to-text model.", no_args_is_help=True)
 app.add_typer(phrases_app, name="phrases")
+app.add_typer(mic_app, name="mic")
+app.add_typer(stt_app, name="stt")
 
 
 @contextmanager
@@ -122,6 +128,75 @@ def _resolve_session(
     return target
 
 
+def _use_text(text: Optional[str]) -> bool:
+    """Typed input when --text is given or input is piped; otherwise listen."""
+    return text is not None or not sys.stdin.isatty()
+
+
+def _download_with_progress(name: str) -> Path:
+    with render.download_progress() as progress:
+        task = progress.add_task(f"Downloading {name}", total=None)
+
+        def on_progress(received: int, total: int) -> None:
+            progress.update(task, completed=received, total=total or None)
+
+        return stt_models.download_model(name, on_progress=on_progress)
+
+
+def _ensure_model(name_or_path: str) -> Path:
+    """The speech model's folder, offering a one-time download if it's missing."""
+    found = stt_models.resolve_model(name_or_path)
+    if found is not None:
+        return found
+    if not stt_models.is_valid_name(name_or_path):
+        raise InputUnavailable(
+            f"No speech model found at '{name_or_path}'. Check `vosk_model` in `ducky config show`."
+        )
+    render.info(f"The speech model '{name_or_path}' isn't installed yet.")
+    if not typer.confirm(
+        "Download it now? (one time; it then works offline)", default=True
+    ):
+        raise InputUnavailable(
+            "Voice input needs a speech model. Download it any time with `ducky stt download`, "
+            "or use --text."
+        )
+    try:
+        return _download_with_progress(name_or_path)
+    except stt_models.ModelError as e:
+        raise InputUnavailable(str(e)) from e
+
+
+def _build_voice(
+    cfg: dict,
+    conn: sqlite3.Connection,
+    *,
+    end_phrases: Optional[list[str]] = None,
+    silence_seconds: Optional[float] = None,
+):
+    """A ready-to-listen VoiceInput. Order matters: mic check, then model, then load."""
+    audio.MicSource(device=audio.parse_device(cfg.get("mic", ""))).check()  # fail fast
+    phrases = (
+        end_phrases
+        if end_phrases is not None
+        else [r["phrase"] for r in endphrase.list_phrases(conn)]
+    )
+    silence = silence_seconds if silence_seconds is not None else cfg["silence"]
+    hint = f"Finish by pausing {silence:g}s, pressing Enter"
+    hint += f', or saying "{phrases[0]}".' if phrases else "."
+
+    model_path = _ensure_model(
+        cfg["vosk_model"]
+    )  # may prompt / download (no spinner active yet)
+    with render.working("Loading speech model..."):
+        return build_voice_input(
+            cfg,
+            phrases,
+            display=render.LiveDisplay(hint),
+            silence_seconds=silence,
+            ensure_model=lambda _name: model_path,
+        )
+
+
 @app.command()
 def thoughts(
     text: Annotated[
@@ -152,18 +227,13 @@ def thoughts(
         render.session_header(current)
         render.dim(turn_runner.opening_prompt(current))
 
-        use_text = text is not None or not sys.stdin.isatty()
-        source = (
-            TextInput(text)
-            if use_text
-            else VoiceInput(
-                silence_seconds=cfg["silence"],
-                end_phrases=[r["phrase"] for r in endphrase.list_phrases(conn)],
-            )
-        )
         try:
+            if _use_text(text):
+                transcript = TextInput(text).get_transcript()
+            else:
+                transcript = _build_voice(cfg, conn).get_transcript()
             with render.working("Ducky is thinking..."):
-                result = turn_runner.run_turn(conn, cfg, current, source)
+                result = turn_runner.run_turn(conn, cfg, current, TextInput(transcript))
         except InputUnavailable as e:
             render.error(str(e))
             raise typer.Exit(1)
@@ -409,6 +479,94 @@ def phrases_remove(phrase: str) -> None:
 
 @phrases_app.command("test")
 def phrases_test() -> None:
-    """Say a phrase and see how it was transcribed (arrives with voice input)."""
-    render.error("phrases test needs voice input (milestone M5).")
-    raise typer.Exit(1)
+    """Say a phrase, see how it was transcribed, and optionally save it as an end phrase."""
+    cfg = load_config()
+    with _db() as conn:
+        phrases = [r["phrase"] for r in endphrase.list_phrases(conn)]
+        render.info(
+            "Say your end phrase (or any phrase to try). I'll show what I heard."
+        )
+        try:
+            heard = _build_voice(
+                cfg, conn, end_phrases=[], silence_seconds=3.0
+            ).get_transcript()
+        except InputUnavailable as e:
+            render.error(str(e))
+            raise typer.Exit(1)
+        except EmptyTranscript as e:
+            render.error(f"{e} Try again, closer to the microphone.")
+            raise typer.Exit(1)
+
+        if endphrase.strip_end_phrase(heard, phrases)[1]:
+            render.info("That works: Ducky would end your turn on it.")
+            return
+        render.info("That doesn't match any of your end phrases.")
+        if len(heard.split()) < endphrase.MIN_WORDS:
+            render.dim(
+                f"It's too short to use as an end phrase ({endphrase.MIN_WORDS} words minimum)."
+            )
+            return
+        if typer.confirm(f'Save "{heard}" as an end phrase?', default=False):
+            saved = endphrase.add_phrase(conn, heard, is_alias=True)
+            render.info(f"Saved: {saved}")
+
+
+# --- mic / stt --------------------------------------------------------------
+
+
+@mic_app.command("list")
+def mic_list() -> None:
+    """List input devices (* marks the system default)."""
+    try:
+        rows = audio.list_input_devices()
+    except InputUnavailable as e:
+        raise _fail(e)
+    if not rows:
+        render.error("No input devices found. Plug in or enable a microphone.")
+        raise typer.Exit(1)
+    render.devices_table(rows)
+    render.dim(
+        "Pick one with: ducky config set mic <index>   (back to default: ducky config set mic default)"
+    )
+
+
+@stt_app.command("status")
+def stt_status() -> None:
+    """Show which speech model is configured and whether it's installed."""
+    cfg = load_config()
+    path = stt_models.resolve_model(cfg["vosk_model"])
+    render.info(f"engine = {cfg['stt']}")
+    render.info(f"model  = {cfg['vosk_model']}")
+    render.info(
+        f"status = installed at {path}"
+        if path
+        else "status = not installed (run `ducky stt download`)"
+    )
+
+
+@stt_app.command("download")
+def stt_download(
+    name: Annotated[
+        Optional[str],
+        typer.Argument(help="Model name (default: the configured model)."),
+    ] = None,
+) -> None:
+    """Download a speech model (one time; afterwards everything works offline)."""
+    cfg = load_config()
+    target = name or cfg["vosk_model"]
+    if stt_models.resolve_model(target) is not None:
+        render.info(f"'{target}' is already installed.")
+        return
+    if not stt_models.is_valid_name(target):
+        raise _fail(
+            ConfigError(
+                f"No speech model found at '{target}', and it isn't a downloadable model name."
+            )
+        )
+    try:
+        path = _download_with_progress(target)
+    except stt_models.ModelError as e:
+        raise _fail(e)
+    render.info(f"Installed at {path}")
+    if name and name != cfg["vosk_model"]:
+        render.dim(f"Use it with: ducky config set vosk_model {name}")

@@ -1,8 +1,17 @@
+from types import SimpleNamespace
+
+import pytest
 from typer.testing import CliRunner
 
 from ducky.cli import app
+from ducky.errors import EmptyTranscript, InputUnavailable
 
 runner = CliRunner()
+
+
+def flat(result):
+    """Output with line-wrapping flattened, so assertions don't depend on the terminal width."""
+    return " ".join(result.output.split())
 
 
 def invoke(*args, **kw):
@@ -39,15 +48,6 @@ def test_new_with_name_and_switch():
 def test_skip_intro():
     r = invoke("thoughts", "--skip-intro", "--text", "my recursion never ends")
     assert "iterating" in r.stdout
-
-
-def test_voice_not_built_yet_message():
-    # CliRunner stdin is not a tty, so force the voice path directly.
-    from ducky.input import InputUnavailable, VoiceInput
-    import pytest
-
-    with pytest.raises(InputUnavailable):
-        VoiceInput().get_transcript()
 
 
 def test_history_and_end():
@@ -167,3 +167,227 @@ def test_ollama_is_selectable_and_keyless():
     shown = invoke("config", "show").stdout
     assert "ollama: gemma4:e2b" in shown and "not needed" in shown
     assert "needs no API key" in invoke("config", "set-key", "ollama").stdout
+
+
+# --- voice -----------------------------------------------------------------------
+
+class FakeInput:
+    """Stands in for VoiceInput: returns text, or raises what the real one would."""
+
+    def __init__(self, result):
+        self.result = result
+
+    def get_transcript(self):
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+class FakeMic:
+    fail = None
+
+    def __init__(self, **kw):
+        pass
+
+    def check(self):
+        if FakeMic.fail:
+            raise FakeMic.fail
+
+
+@pytest.fixture
+def voice(monkeypatch):
+    """Make `thoughts` take the voice path with a fake mic and a fake recognizer."""
+    FakeMic.fail = None
+    monkeypatch.setattr("ducky.audio.MicSource", FakeMic)
+    monkeypatch.setattr("ducky.cli._use_text", lambda text: False)
+    state = SimpleNamespace(result="my loop never ends", built=[])
+
+    def fake_build(cfg, phrases, **kw):
+        state.built.append((phrases, kw))
+        return FakeInput(state.result)
+
+    monkeypatch.setattr("ducky.cli.build_voice_input", fake_build)
+    return state
+
+
+def install_model(name="vosk-model-small-en-us-0.15"):
+    from ducky.stt.models import models_dir
+
+    (models_dir() / name / "am").mkdir(parents=True, exist_ok=True)
+
+
+def test_thoughts_by_voice_records_the_transcript(voice):
+    install_model()
+    r = invoke("thoughts")
+    assert r.exit_code == 0, r.output
+    assert "Ducky" in r.stdout
+    assert "my loop never ends" in invoke("history").stdout
+    phrases, kw = voice.built[0]
+    assert phrases == ["have any thoughts ducky"] and kw["silence_seconds"] == 6.0
+
+
+def test_voice_uses_the_configured_silence_and_phrases(voice):
+    install_model()
+    invoke("config", "set", "silence", "9")
+    invoke("phrases", "add", "over to you duck")
+    invoke("thoughts")
+    phrases, kw = voice.built[0]
+    assert "over to you duck" in phrases and kw["silence_seconds"] == 9.0
+
+
+@pytest.mark.parametrize("error,fragment", [
+    (EmptyTranscript("I didn't catch anything."), "didn't catch anything"),
+    (InputUnavailable("No microphone found (x)."), "No microphone found"),
+])
+def test_voice_failures_are_reported_cleanly(voice, error, fragment):
+    install_model()
+    voice.result = error
+    r = invoke("thoughts")
+    assert r.exit_code == 1 and fragment in r.output
+
+
+def test_missing_microphone_is_reported_before_any_download(voice, monkeypatch):
+    FakeMic.fail = InputUnavailable("No microphone found (x). Run `ducky mic list`")
+    downloads = []
+    monkeypatch.setattr("ducky.cli._download_with_progress", lambda name: downloads.append(name))
+    r = invoke("thoughts", input="y\n")
+    assert r.exit_code == 1 and "No microphone found" in r.output
+    assert downloads == [] and "isn't installed" not in r.output   # never even asked
+
+
+def test_missing_model_declined(voice):
+    r = invoke("thoughts", input="n\n")
+    assert r.exit_code == 1
+    assert "isn't installed yet" in flat(r) and "ducky stt download" in flat(r)
+    assert voice.built == []
+
+
+def test_missing_model_accepted_downloads_then_listens(voice, monkeypatch):
+    from ducky.stt.models import models_dir
+
+    def fake_download(name):
+        install_model(name)
+        return models_dir() / name
+
+    monkeypatch.setattr("ducky.cli._download_with_progress", fake_download)
+    r = invoke("thoughts", input="y\n")
+    assert r.exit_code == 0, r.output
+    assert "my loop never ends" in invoke("history").stdout
+
+
+def test_failed_download_is_reported(voice, monkeypatch):
+    from ducky.stt.models import ModelError
+
+    def boom(name):
+        raise ModelError("Couldn't download the model (ConnectError). Check your internet connection.")
+
+    monkeypatch.setattr("ducky.cli._download_with_progress", boom)
+    r = invoke("thoughts", input="y\n")
+    assert r.exit_code == 1 and "internet connection" in flat(r)
+
+
+def test_configured_model_path_that_does_not_exist(voice):
+    invoke("config", "set", "vosk_model", "C:\\no\\such\\folder")
+    r = invoke("thoughts")
+    assert r.exit_code == 1 and "No speech model found" in r.output
+
+
+def test_a_model_folder_path_is_used_directly(voice, tmp_path):
+    folder = tmp_path / "custom-model"
+    (folder / "am").mkdir(parents=True)
+    invoke("config", "set", "vosk_model", str(folder))
+    assert invoke("thoughts").exit_code == 0 and "isn't installed" not in invoke("thoughts").stdout
+
+
+# --- phrases test ----------------------------------------------------------------
+
+def test_phrases_test_recognizes_a_working_phrase(voice):
+    install_model()
+    voice.result = "have any thoughts ducky"
+    r = invoke("phrases", "test")
+    assert r.exit_code == 0 and "That works" in r.stdout
+    phrases, kw = voice.built[0]
+    assert phrases == [] and kw["silence_seconds"] == 3.0    # the test must not end on a phrase
+
+
+def test_phrases_test_offers_to_save_a_misheard_phrase_as_an_alias(voice):
+    install_model()
+    voice.result = "have any thoughts ducking"
+    r = invoke("phrases", "test", input="y\n")
+    assert "doesn't match" in r.stdout and "Saved: have any thoughts ducking" in r.stdout
+    assert "have any thoughts ducking  (alias)" in invoke("phrases", "list").stdout
+
+
+def test_phrases_test_can_be_declined(voice):
+    install_model()
+    voice.result = "have any thoughts ducking"
+    invoke("phrases", "test", input="n\n")
+    assert "ducking" not in invoke("phrases", "list").stdout
+
+
+def test_phrases_test_rejects_a_single_word(voice):
+    install_model()
+    voice.result = "duck"
+    r = invoke("phrases", "test")
+    assert r.exit_code == 0 and "too short" in r.stdout
+
+
+@pytest.mark.parametrize("error", [EmptyTranscript("I didn't hear anything."),
+                                   InputUnavailable("No microphone found (x).")])
+def test_phrases_test_failures(voice, error):
+    install_model()
+    voice.result = error
+    assert invoke("phrases", "test").exit_code == 1
+
+
+# --- mic / stt ---------------------------------------------------------------------
+
+def test_mic_list(monkeypatch):
+    rows = [{"index": 1, "name": "Built-in Mic", "channels": 2, "default": True},
+            {"index": 4, "name": "USB Headset", "channels": 1, "default": False}]
+    monkeypatch.setattr("ducky.audio.list_input_devices", lambda *a, **k: rows)
+    r = invoke("mic", "list")
+    assert r.exit_code == 0 and "Built-in Mic" in r.stdout and "USB Headset" in r.stdout
+    assert "config set mic" in r.stdout
+
+
+def test_mic_list_with_no_devices_or_a_broken_audio_stack(monkeypatch):
+    monkeypatch.setattr("ducky.audio.list_input_devices", lambda *a, **k: [])
+    assert invoke("mic", "list").exit_code == 1
+
+    def boom(*a, **k):
+        raise InputUnavailable("PortAudio couldn't be loaded (x).")
+
+    monkeypatch.setattr("ducky.audio.list_input_devices", boom)
+    r = invoke("mic", "list")
+    assert r.exit_code == 1 and "PortAudio" in r.output
+
+
+def test_stt_status_before_and_after_install():
+    assert "not installed" in invoke("stt", "status").stdout
+    install_model()
+    r = invoke("stt", "status")
+    assert "installed at" in r.stdout and "vosk-model-small-en-us-0.15" in r.stdout
+
+
+def test_stt_download_flows(monkeypatch):
+    from ducky.stt.models import ModelError, models_dir
+
+    calls = []
+
+    def fake_download(name):
+        calls.append(name)
+        install_model(name)
+        return models_dir() / name
+
+    monkeypatch.setattr("ducky.cli._download_with_progress", fake_download)
+    assert invoke("stt", "download").exit_code == 0 and calls == ["vosk-model-small-en-us-0.15"]
+    assert "already installed" in invoke("stt", "download").stdout and len(calls) == 1
+
+    r = invoke("stt", "download", "vosk-model-en-us-0.22-lgraph")
+    assert "config set vosk_model vosk-model-en-us-0.22-lgraph" in r.stdout   # tells you how to use it
+
+    monkeypatch.setattr("ducky.cli._download_with_progress",
+                        lambda name: (_ for _ in ()).throw(ModelError("No Vosk model named 'x'.")))
+    assert invoke("stt", "download", "x").exit_code == 1
+    assert invoke("stt", "download", "../etc").exit_code == 1    # not a name and not a folder
