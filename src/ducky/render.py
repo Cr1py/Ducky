@@ -4,6 +4,7 @@ from __future__ import annotations
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
+from rich.spinner import Spinner
 from rich.progress import (
     BarColumn,
     DownloadColumn,
@@ -26,8 +27,20 @@ def error(msg: str) -> None:
 
 
 def working(message: str):
-    """Spinner context manager (no-op output when not attached to a terminal)."""
-    return console.status(Text(message, style="dim"))
+    """Spinner context manager (prints nothing when not attached to a terminal).
+
+    Built on Live directly (not console.status) so we can switch off stdout/stderr
+    redirection. With redirection on, Rich replaces sys.stdout with a proxy while the spinner
+    runs, and a library imported during that time (colorama, via tqdm, via vosk) can keep a
+    reference to the proxy, which then gets finalized, noisily, at interpreter shutdown.
+    """
+    return Live(
+        Spinner("dots", text=Text(message, style="dim")),
+        console=console,
+        transient=True,
+        redirect_stdout=False,
+        redirect_stderr=False,
+    )
 
 
 def info(msg: str) -> None:
@@ -123,7 +136,14 @@ class LiveDisplay:
         )
 
     def start(self, silence_seconds: float) -> None:
-        self._live = Live(self._view("", 0.0, None), console=console, refresh_per_second=10, transient=False)
+        self._live = Live(
+            self._view("", 0.0, None),
+            console=console,
+            refresh_per_second=10,
+            transient=False,
+            redirect_stdout=False,  # see working(): never leave a stdout proxy behind
+            redirect_stderr=False,
+        )
         self._live.start()
 
     def update(self, text: str, level: float, silence_left: float | None) -> None:
@@ -145,6 +165,8 @@ def download_progress() -> Progress:
         TransferSpeedColumn(),
         TimeRemainingColumn(),
         console=console,
+        redirect_stdout=False,
+        redirect_stderr=False,
     )
 
 

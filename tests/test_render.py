@@ -45,3 +45,31 @@ def test_live_view_shows_countdown_only_after_speech(monkeypatch):
     quiet = "".join(str(t) for t in display._view("", 0.0, None).renderables)
     talking = "".join(str(t) for t in display._view("hi", 0.1, 3.0).renderables)
     assert "ending in" not in quiet and "ending in 3s" in talking
+
+
+def test_live_widgets_never_replace_stdout(monkeypatch):
+    """Rich's stdout proxy can outlive the widget (a library imported meanwhile may keep it),
+    which printed a traceback at shutdown on Windows. We must never install one."""
+    import sys
+
+    monkeypatch.setattr(render, "console", Console(file=io.StringIO(), force_terminal=True))
+    real = sys.stdout
+
+    with render.working("Loading speech model..."):
+        assert sys.stdout is real
+    display = render.LiveDisplay("hint")
+    display.start(6.0)
+    display.update("hello", 0.1, 3.0)
+    assert sys.stdout is real
+    display.stop("hello")
+    with render.download_progress() as progress:
+        progress.add_task("dl", total=10)
+        assert sys.stdout is real
+    assert sys.stdout is real
+
+
+def test_spinner_prints_nothing_without_a_terminal(monkeypatch):
+    buffer = capture(monkeypatch)
+    with render.working("Ducky is thinking..."):
+        pass
+    assert buffer.getvalue() == ""
