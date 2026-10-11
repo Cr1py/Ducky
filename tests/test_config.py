@@ -40,3 +40,20 @@ def test_agent_is_validated_against_registry():
 def test_invalid_values(key, value):
     with pytest.raises(ConfigError):
         config.coerce(key, value)
+
+
+def test_voice_defaults():
+    cfg = config.load_config()
+    assert cfg["vosk_model"] == "vosk-model-small-en-us-0.15" and cfg["mic"] == ""
+
+
+def test_mic_setting():
+    assert config.coerce("mic", " 2 ") == "2"
+    assert config.coerce("mic", "USB Microphone") == "USB Microphone"
+    assert config.coerce("mic", "default") == "" and config.coerce("mic", "") == ""
+
+
+def test_vosk_model_setting():
+    assert config.coerce("vosk_model", " vosk-model-en-us-0.22-lgraph ") == "vosk-model-en-us-0.22-lgraph"
+    with pytest.raises(ConfigError, match="can't be empty"):
+        config.coerce("vosk_model", "  ")
